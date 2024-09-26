@@ -5,6 +5,22 @@ import mediapipe as mp
 from matplotlib import pyplot as plt
 import time
 
+# Preprocess Data and Create Labels and Features
+from sklearn.model_selection import train_test_split
+from tensorflow import keras
+from keras import utils as keras_utils
+to_categorical = keras_utils.to_categorical
+
+# Build and Train LSTM Neural Network
+from keras import models as keras_models
+from keras import layers as keras_layers
+from keras import callbacks as keras_callbacks
+Sequential = keras_models.Sequential
+LSTM = keras_layers.LSTM
+Dense = keras_layers.Dense
+TensorBoard = keras_callbacks.TensorBoard
+
+
 # MediaPipe values
 mp_holistic = mp.solutions.holistic  # Holistic model
 mp_drawing = mp.solutions.drawing_utils  # Drawing utilities
@@ -59,39 +75,6 @@ def get_key_points(results):
     
     return np.concatenate([pose_lm, face_lm, lh_lm, rh_lm]) 
 
-# Start video capture
-cap = cv2.VideoCapture(0)
-# Set and access the Mediapipe model
-with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
-    while cap.isOpened():
-        # Read frame from webcam
-        ret, frame = cap.read()
-        
-        # Perform Mediapipe detection on the frame
-        image, results = mediapipe_detection(frame, holistic)
-        #print(results)  # Print results for debugging
-        
-        # Draw landmarks on the image
-        draw_landmarks(image, results)
-        
-        # Extract key points
-        get_key_points(results)
-        
-        # Flip the frame horizontally to remove mirror effect
-        flipped_frame = cv2.flip(image, 1)  # Use the processed image with the landmarks
-        
-        # Display the frame with landmarks
-        cv2.imshow('Sign Detection', flipped_frame)
-        
-        # Break loop if 'q' is pressed
-        if cv2.waitKey(10) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-
-
 # SETUP FOLDER FOR COLLECTION
 DATA_PATH = os.path.join('MP_Data') # Path for exported data
 actions = np.array(['hello', 'thanks', 'iloveyou']) # Actions to detect
@@ -104,3 +87,92 @@ for action in actions:
             os.makedirs(os.path.join(DATA_PATH, action, str(sequence)))
         except: 
             pass
+
+
+# Preprocess Data and Create Labels and Features
+label_map = {label:num for num, label in enumerate(actions)}
+
+sequences, labels = [], []
+for action in actions:
+    for sequence in range(no_sequences):
+        window = []
+        for frame_num in range(sequence_length):
+            res = np.loads(os.path.join(DATA_PATH, action, str(sequence), "{}.npy".format(frame_num))) # Loop through all frames
+            window.append(res)
+        sequences.append(window) # 90 different videos 30 frames each
+        labels.append(label_map[action])
+        
+x = np.array(sequences)
+y = to_categorical(labels).astype(int)
+
+x_train, x_test, y_train, y_test = train_test_split(x, y, test_siz = 0.05)
+
+
+# Build and Train LSTM Neural Network
+log_dir = os.path.join('Logs')
+tb_callback = TensorBoard(log_dir=log_dir)
+
+model = Sequential()
+model.add(LSTM(64, return_sequences=True, activation='relu', input_shape=(30, 1662)))
+model.add(LSTM(128, return_sequences=True, activation='relu'))
+model.add(LSTM(64, return_sequences=False, activation='relu'))
+model.add(Dense(64, activation='relu'))
+model.add(Dense(32, activation='relu'))
+model.add(Dense(actions.shape[0], activation='softmax'))
+
+model.compile(optimizer='Adam', loss='categorical_crossentropy', metrics=['categorical_accuracy'])
+model.fit(x_train, y_train, epochs=2000, callbacks=[tb_callback])  # This needs to be run to train the model
+
+
+# Start video capture
+cap = cv2.VideoCapture(0)
+# Set and access the Mediapipe model
+with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
+    #while cap.isOpened():
+    
+    # Loop through actions
+    for action in actions:
+        # Loop through sequences
+        for sequence in range(no_sequences):
+            # Loop through sequence length
+            for frame_num in range(sequence_length):
+                
+                # Read frame from webcam
+                ret, frame = cap.read()
+                
+                # Perform Mediapipe detection on the frame
+                image, results = mediapipe_detection(frame, holistic)
+                #print(results)  # Print results for debugging
+                
+                # Draw landmarks on the image
+                draw_landmarks(image, results)
+                
+                # Extract key points
+                #get_key_points(results)
+                
+                # Wait Logic
+                if frame_num == 0:
+                    cv2.putText(image, 'STARING COLLECTION', (120, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 4, cv2.LINE_AA)
+                    cv2.putText(image, 'Collecting Frames for {} Video Number {}'.format(action, sequence), (15, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA) # Font Family, Font Size, Font Color, Line Width, Line Type
+                    cv2.waitKey(1000)
+                else:
+                    cv2.putText(image, 'Collecting Frames for {} Video Number {}'.format(action, sequence), (15, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+                
+                # Export Keypoints
+                keypoints = get_key_points(results)
+                npy_path = os.path.join(DATA_PATH, action, str(sequence), str(frame_num))
+                np.save(npy_path, keypoints)
+                
+                # Flip the frame horizontally to remove mirror effect
+                #flipped_frame = cv2.flip(image, 1)  # Use the processed image with the landmarks
+                
+                # Display the frame with landmarks
+                cv2.imshow('Sign Detection', image)
+                
+                # Break loop if 'q' is pressed so camera is closed
+                if cv2.waitKey(10) & 0xFF == ord('q'):
+                    break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
